@@ -1,0 +1,408 @@
+---
+title: "Exploring eBird data in Canada in 2025"
+format: html
+---
+
+```{r}
+#| include: false
+library(auk)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+
+theme_set(theme_bw())
+```
+
+Loading the data. We compute some time related variables and remove observations from ebird specialized protocols.
+
+
+```{r}
+dat_s <- readRDS("data/dat_s.rds") |>
+  # Calculate fields
+  mutate(year = year(observation_date), 
+         month = month(observation_date, label = F), 
+         month_lab = month(observation_date, label = T),
+         week = week(observation_date), 
+         weekday = wday(observation_date, label = T),
+         time_observations_started_hms = hms(time_observations_started),
+         hour = hour(time_observations_started_hms),
+         minutes = minutes(time_observations_started_hms)
+        ) |>
+  # Right off the bat, remove observation from specialized protocols
+  filter(!(observation_type %in% c(
+    "eBird Pelagic Protocol", "Nocturnal Flight Call Count", "Banding", "Area"
+  )))
+
+dat_s |> str()
+```
+
+Simple checks.
+
+```{r}
+nrow(dat_s) # 1 246 952
+dat_s$all_species_reported |> all() # TRUE, only complete checklists
+dat_s$checklist_id |> unique() |> length() # 1 246 952 => same
+```
+
+### Numbers of observers
+
+```{r}
+
+dat_s$number_observers |> is.na() |> sum() # 3549 missing number of observers
+dat_s$number_observers |> mean(na.rm = T) # 1.458653
+dat_s$number_observers |> median(na.rm = T) # 1
+dat_s$number_observers |> table()
+dat_s$number_observers |> sort(decreasing = TRUE) |> head()
+# dat_s |> filter(number_observers >= 100) |> View()
+```
+
+How do number of observers change with time? Some checklists have insanely high number of observers, probably due to input errors. We filter to <= 100 obserbers.
+
+```{r}
+dat_s_obs_m <- dat_s |>
+  filter(number_observers<=100) |>
+  select(checklist_id, month, number_observers) |>
+  group_by(month) |>
+  summarize(mean_number_obs = mean(number_observers, na.rm = T), 
+            n_samples = n(),
+            sd_number_obs = sd(number_observers, na.rm = T)) |>
+  mutate(se = sd_number_obs/sqrt(n_samples),
+         mean_number_obs_upper = mean_number_obs+1.96*se,
+         mean_number_obs_lower = mean_number_obs-1.96*se)
+
+dat_s_obs_w <- dat_s |>
+  filter(number_observers<=100) |>
+  select(checklist_id, week, number_observers) |>
+  group_by(week) |>
+  summarize(mean_number_obs = mean(number_observers, na.rm = T), 
+            n_samples = n(),
+            sd_number_obs = sd(number_observers, na.rm = T)) |>
+  mutate(se = sd_number_obs/sqrt(n_samples),
+         mean_number_obs_upper = mean_number_obs+1.96*se,
+         mean_number_obs_lower = mean_number_obs-1.96*se)
+```
+
+Now we plot:
+
+```{r}
+dat_s_obs_m |>
+  ggplot(aes(x = month, y = mean_number_obs, 
+             ymin = mean_number_obs_lower, 
+             ymax = mean_number_obs_upper)) +
+  geom_point() + 
+  geom_errorbar()
+```
+
+```{r}
+dat_s_obs_w |>
+  ggplot(aes(x = week, y = mean_number_obs, 
+             ymin = mean_number_obs_lower, 
+             ymax = mean_number_obs_upper)) +
+  geom_point() + 
+  geom_errorbar()
+```
+
+### Observation date
+
+Mean and median.
+
+```{r}
+dat_s$observation_date |> mean() # "2025-06-22"
+dat_s$observation_date |> median() # "2025-06-10"
+```
+
+Simple viz.
+
+```{r}
+ggplot(dat_s) +
+  geom_histogram(aes(month_lab), stat="count")
+ggplot(dat_s) +
+  geom_histogram(aes(week), stat="count")
+ggplot(dat_s) +
+  geom_histogram(aes(weekday), stat="count")
+ggplot(dat_s) +
+  geom_histogram(aes(weekday), stat="count")
+```
+
+Then we group.
+
+```{r}
+dat_s_date_m <- dat_s |> 
+  group_by(month, weekday) |> 
+  summarise(weekday_n = n())
+dat_s_date_wk <- dat_s  |> 
+  group_by(week, weekday) |> 
+  summarise(weekday_n = n())
+```
+
+More viz.
+
+```{r}
+ggplot(dat_s_date_m, aes(fill=weekday, y=weekday_n, x=month)) + 
+    geom_bar(position="stack", stat="identity")
+ggplot(dat_s_date_wk, aes(fill=weekday, y=weekday_n, x=week)) + 
+    geom_bar(position="stack", stat="identity")
+
+ggplot(dat_s_date_m, aes(color=weekday, y=weekday_n, x=month)) + 
+    geom_point() +
+    geom_smooth(se = F, method = "gam", formula = y ~ s(x, k=12))
+ggplot(dat_s_date_wk, aes(color=weekday, y=weekday_n, x=week)) +
+    geom_point() +
+    geom_smooth(se = F, method = "gam", formula = y ~ s(x, k=12))
+```
+
+### NAs exploration
+
+We explore distributions of NA values in the dataset.
+
+```{r}
+is_not_na <- \(x) !is.na(x)
+
+dat_s$effort_area_ha |> is_not_na() |> sum() # 1159
+dat_s$effort_distance_km |> is.na() |> sum() # 442375
+
+dat_s$observation_type |> is.na() |> sum() # None
+dat_s$observation_type |> table(useNA = "ifany")
+dat_s |>
+  mutate(effort_distance_is_na = is.na(effort_distance_km)) |>
+  select(effort_distance_is_na, observation_type) |> table(useNA = "ifany")
+
+dat_s$protocol_name |> is.na() |> sum()
+dat_s$protocol_name |> table(useNA = "ifany")
+dat_s |>
+  mutate(effort_distance_is_na = is.na(effort_distance_km)) |>
+  select(effort_distance_is_na, protocol_name) |> table(useNA = "ifany")
+
+dat_s$protocol_code |> is.na() |> sum() 
+dat_s$protocol_code |> table(useNA = "ifany")
+dat_s |>
+  mutate(effort_distance_is_na = is.na(effort_distance_km)) |>
+  select(effort_distance_is_na, protocol_code) |> table(useNA = "ifany")
+
+dat_s$project_names |> is.na() |> sum()
+dat_s$project_names |> table(useNA = "ifany")
+dat_s |>
+  mutate(effort_distance_is_na = is.na(effort_distance_km)) |>
+  select(effort_distance_is_na, project_names) |> table(useNA = "ifany")
+
+dat_s$project_identifiers |> is.na() |> sum()
+dat_s$project_identifiers |> table(useNA = "ifany")
+dat_s |>
+  mutate(effort_distance_is_na = is.na(effort_distance_km)) |>
+  select(effort_distance_is_na, project_identifiers) |> table(useNA = "ifany")
+```
+
+### Checklist duration
+
+```{r}
+dat_s |> 
+  ggplot(aes(x = duration_minutes)) +
+  geom_histogram(binwidth = 5) +
+  facet_wrap(~month_lab)
+```
+
+Some grouping.
+
+```{r}
+dat_s_dur_m <- dat_s |>
+  select(checklist_id, month, duration_minutes) |>
+  group_by(month) |>
+  summarize(mean_dur = mean(duration_minutes, na.rm = T), 
+            n_samples = n(),
+            sd_dur = sd(duration_minutes, na.rm = T)) |>
+  mutate(se = sd_dur/sqrt(n_samples),
+         mean_dur_upper = mean_dur+1.96*se,
+         mean_dur_lower = mean_dur-1.96*se)
+
+dat_s_dur_m_w <- dat_s |>
+  select(checklist_id, week, duration_minutes) |>
+  group_by(week) |>
+  summarize(mean_dur = mean(duration_minutes, na.rm = T), 
+            n_samples = n(),
+            sd_dur = sd(duration_minutes, na.rm = T)) |>
+  mutate(se = sd_dur/sqrt(n_samples),
+         mean_dur_upper = mean_dur+1.96*se,
+         mean_dur_lower = mean_dur-1.96*se)
+```
+
+Basic viz.
+
+```{r}
+dat_s_dur_m |>
+  ggplot(aes(x = month, y = mean_dur, 
+             ymin = mean_dur_upper, 
+             ymax = mean_dur_lower)) +
+  geom_point() + 
+  geom_errorbar()
+
+dat_s_dur_m_w |>
+  ggplot(aes(x = week, y = mean_dur, 
+             ymin = mean_dur_upper, 
+             ymax = mean_dur_lower)) +
+  geom_point() + 
+  geom_errorbar()
+```
+
+### Time observation started
+
+```{r}
+dat_s$time_observations_started |> is.na() |> sum()
+dat_s |>
+  ggplot(aes(x = hour)) +
+  geom_histogram(binwidth = 1)
+```
+
+### Looking into effort
+
+```{r}
+# plot(dat_s$hour, dat_s$duration_minutes)
+cor.test(dat_s$hour, dat_s$duration_minutes)
+```
+
+Effort calculation. In the [ebird guide for best practices](https://ebird.github.io/ebird-best-practices/ebird.html#sec-ebird-effort), it is said:
+
+> "Based on our experience working with these data in the context of eBird Status and Trends,  we suggest restricting checklists to traveling or stationary counts less than 6 hours in duration and 10 km in length, at speeds below 100km/h, and with 10 or fewer observers [...]"
+
+In comparison, ebird status and trends filter according to looser criteria:
+
+> Submitted as of 10 February 2024 //
+> Observation dates from 1 January 2009 through 31 December 2023 //
+> Complete checklists (all bird species detected and identified were included) //
+> The primary checklist in a shared checklist //
+> Checklists that used the generic traveling or stationary protocols (i.e., not incidental protocol) //
+> If traveling checklists, were not longer than 10 kilometers (up to 30 km for species modeled only over ocean) //
+> Not longer in duration than 24 hours //
+> Contained information on: start time, duration, protocol, number of observers, and distance traveled. //
+> Counts of species were available (i.e., a species was not just noted as ‘present’)
+
+Let's follow and highlight the subsetting according to best practcies first, to see how much data we are removing.
+
+
+```{r}
+dat_s_effort <- dat_s |>
+  # NAs
+  filter(!is.na(duration_minutes)) |>
+  filter(!is.na(effort_distance_km)) |>
+  filter(!is.na(number_observers)) |>
+
+  # Calculate effort "speed"
+  mutate(effort_speed_kmh = effort_distance_km/(duration_minutes/60)) |>
+  # ifelse(observation_type == "Traveling", 
+  # (effort_distance_km/(duration_minutes/60)), NA)) |>
+
+  # Categorize effort_speed
+  mutate(effort_speed_kmh_cat = case_when(
+    effort_speed_kmh == 0 ~ "Stationary",
+    effort_speed_kmh < 4 ~ "(-) Avg Walking",
+    effort_speed_kmh <= 6 ~ "Avg Walking",
+    effort_speed_kmh > 6 ~ "(+) Avg Walking"
+  )) |>
+
+  # Highlight
+  mutate(to_keep = (
+    (observation_type %in% c("Stationary", "Traveling")) &
+      (number_observers <= 10) &
+      (duration_minutes <= (60*6)) &
+      (effort_distance_km <= 10) &
+      (effort_speed_kmh <= 100)
+  ))
+  
+  # mutate(weight = dnorm(effort_speed, mean = 5, sd = 1.5)) |>
+  # slice_sample(n = 500000, weight_by = weight, replace = FALSE)
+  # filter((effort_speed > 1) & (effort_speed < 12))
+  # mutate(duration_minutes_sc = scale(duration_minutes),
+  #        effort_distance_km_sc = scale(effort_distance_km),
+  #        number_observers_sc = scale(number_observers)) |>
+
+max(dat_s_effort$effort_speed_kmh, na.rm = T)
+# dat_s_effort |> 
+#   filter(effort_speed == 20) |> View()
+```
+
+```{r}
+table(dat_s_effort$observation_type, dat_s_effort$effort_speed_kmh == 0)
+```
+
+```{r}
+dat_s_effort |>
+  # filter(to_keep) |>
+ggplot() +
+  geom_point(aes(
+    x = effort_distance_km, 
+    y = duration_minutes/60,
+    alpha = to_keep, 
+    color = to_keep)) +
+  scale_color_manual(values = c(
+    "TRUE" = "#42b386",
+    "FALSE" = "#d69c5f")
+  ) +
+  scale_alpha_manual(values = c(
+    "TRUE" = 0.8,
+    "FALSE" = 0.1)) +
+  # scale_color_viridis_c() +
+  labs(x = "Effort Distance (km)", y = "Duration (hr)")
+```
+
+```{r}
+dat_s_effort |> filter(observation_type == "Stationary") |> 
+  select(observation_type, effort_speed_kmh_cat) |> table()
+dat_s_effort |> filter(observation_type == "Stationary") |>
+  select(checklist_id, observation_type, effort_speed_kmh)
+```
+
+```{r}
+dat_s_effort |>
+  filter(to_keep) |>
+  arrange(desc(observation_type)) |>
+ggplot() +
+  geom_point(aes(
+    x = effort_distance_km, 
+    y = (duration_minutes/60),
+    fill = effort_speed_kmh_cat,
+    shape = observation_type,
+    color = observation_type,
+  )) +
+  scale_fill_manual(values = c(
+    "Stationary"      = "#e0b1cb40",
+    "(-) Avg Walking" = "#be95c440",
+    "Avg Walking"     = "#5e548e40",
+    "(+) Avg Walking" = "#9f86c040"
+  )) +
+  scale_shape_manual(values = c(
+    "Traveling"  = 21,
+    "Stationary" = 23
+  ))+
+  scale_color_manual(values = c(
+    "Traveling"  = "#ffffff00",
+    "Stationary" = "#c81d25"
+  )) +
+  # scale_alpha_manual(values = c(
+  #   "TRUE" = 0.8,
+  #   "FALSE" = 0.1)) +
+  labs(x = "Effort Distance (km)", y = "Duration (hr)", color = "Obs Type", shape = "Obs Type", fill = "Speed Cat")
+```
+
+```{r}
+plot(density(dat_s_effort$effort_speed_kmh))
+
+cor.test(dat_s_effort$effort_distance_km, dat_s_effort$duration_minutes)
+
+dat_s_effort_calc <- dat_s_effort |>
+  mutate(effort = (effort_distance_km * duration_minutes) * number_observers)
+
+dat_s_effort_calc$effort |> max()
+dat_s_effort_calc$effort |> min()
+dat_s_effort_calc$effort |> mean()
+dat_s_effort_calc$effort |> median()
+
+dat_s_effort_calc |>
+  ggplot(aes(x = log(effort))) +
+  geom_histogram(bins = 100)
+
+dat_s_effort_calc |>
+  filter(to_keep) |>
+  ggplot(aes(x = log(effort))) +
+  geom_histogram(bins = 100) +
+  facet_wrap(~effort_speed_kmh_cat, scales = "free")
+```
