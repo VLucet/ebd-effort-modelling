@@ -2,3 +2,13 @@
 .Rhistory
 .RData
 .Ruserdata
+# Census data cache
+.cache
+/.quarto/
+**/*.quarto_ipynb
+# Data
+data
+# Useless scripts
+scratch
+# qmd files
+*_files
